@@ -1,0 +1,13 @@
+{
+    "files.associations": {
+        "stm32f4xx.h": "c",
+        "stm32f407xx.h": "c",
+        "stm32f417xx.h": "c",
+        "stm32f4xx_hal.h": "c",
+        "stm32f4xx_hal_conf.h": "c",
+        "gpio.h": "c",
+        "key.h": "c",
+        "system_clock.h": "c",
+        "ccuart.h": "c"
+    }
+}
