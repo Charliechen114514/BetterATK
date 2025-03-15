@@ -7,9 +7,11 @@
 #include "stm32f4xx_hal.h"
 
 
-__attribute__((weak)) void SysTick_Handler(void){
-    // Add default definitions here
-    // like 
-    HAL_IncTick(); 
+// For any HAL Application Level systicks
+// reset this for user defined level
+// Don't do anything related to the systicks
+// else it maybe crashed and dumped into WatchDog error
+void SysTick_Handler(void)
+{
+    HAL_IncTick();
 }
-

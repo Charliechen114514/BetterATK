@@ -9,6 +9,7 @@
         "key.h": "c",
         "system_clock.h": "c",
         "ccuart.h": "c",
-        "hal_system_level_callback.h": "c"
+        "hal_system_level_callback.h": "c",
+        "stm32f4xx_hal_uart.h": "c"
     }
 }

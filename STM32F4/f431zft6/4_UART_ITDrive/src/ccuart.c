@@ -8,21 +8,35 @@ static void __die(void)
         ;
 }
 
-static void __post_init(CCUART *uart, CCUART_Type types)
-{
-    uart->type = types;
-    switch (types)
-    {
-    case UART_SYNC:
-        break;
-    }
-}
-
 static UART_AFGPIO_Info *cur_infos;
+CCUART*                 cur_uart;
+
+extern CCUART* trace_array[MAX_TRACE_UART_LEN];
+extern uint8_t trace_n;
 
 static void __pvt_af_uart_gpio(UART_AFGPIO_Info *infos)
 {
     cur_infos = infos;
+}
+
+static void __post_init(CCUART *uart, CCUART_Type types)
+{
+    uart->type = types;
+    trace_array[trace_n] = uart;
+    trace_n++;
+    switch (types)
+    {
+    case UART_SYNC:
+        break;
+    case UART_IT:
+#if ENABLE_USART_INTR
+    HAL_NVIC_EnableIRQ(cur_infos->irq_n);
+    HAL_NVIC_SetPriority(cur_infos->irq_n, 3, 3);
+#else
+        __die();
+#endif
+        break;
+    }
 }
 
 void makeup_uartsend_buffer(UARTSendBuffer *buffer, char *src, uint16_t len)
@@ -66,6 +80,7 @@ void configure_common_uart(
         __die();
     }
     __post_init(uart, uart_type);
+    cur_uart = uart;
 }
 
 void HAL_UART_MspInit(UART_HandleTypeDef *huart)
@@ -106,10 +121,6 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
 
 void send_src_uart_sync(CCUART *uart, UARTSendBuffer *buffer)
 {
-    if (uart->type != UART_SYNC)
-    {
-        __die();
-    }
     HAL_UART_Transmit(
         &(uart->handles),
         (uint8_t *)(buffer->sources),
@@ -119,10 +130,6 @@ void send_src_uart_sync(CCUART *uart, UARTSendBuffer *buffer)
 
 void send_srcview_uart_sync(CCUART *uart, UARTSendBufferView *buffer_view)
 {
-    if (uart->type != UART_SYNC)
-    {
-        __die();
-    }
     HAL_UART_Transmit(
         &(uart->handles),
         (uint8_t *)(buffer_view->sources),
@@ -132,10 +139,6 @@ void send_srcview_uart_sync(CCUART *uart, UARTSendBufferView *buffer_view)
 
 void receive_src_uart_sync(CCUART *uart, UARTSendBuffer *buffer)
 {
-    if (uart->type != UART_SYNC)
-    {
-        __die();
-    }
     HAL_UART_Receive(&(uart->handles),
                      (uint8_t *)(buffer->sources),
                      buffer->indication_len,
@@ -144,11 +147,103 @@ void receive_src_uart_sync(CCUART *uart, UARTSendBuffer *buffer)
 
 void receive_srcview_uart_sync(CCUART *uart, UARTSendBufferView *buffer_view)
 {
-    if (uart->type != UART_SYNC)
-    {
-        __die();
-    }
     HAL_UART_Receive(&(uart->handles), 
     (uint8_t *)(buffer_view->sources), 
     buffer_view->src_len, uart->time_out);
+}
+
+void configure_uart_itcallback(
+    CCUART*             uart,
+    void(*it_tx_callback)(struct __ccuart*),
+    void(*it_rx_callback)(struct __ccuart*)
+)
+{
+    if(uart->type != UART_IT){
+        __die();
+    }
+
+    uart->it_rx_callback = it_rx_callback;
+    uart->it_tx_callback = it_tx_callback;
+}
+
+void send_src_uart(CCUART *uart, UARTSendBuffer *buffer)
+{
+    switch (uart->type)
+    {
+    case UART_SYNC:
+        HAL_UART_Transmit(
+            &(uart->handles),
+            (uint8_t *)(buffer->sources),
+            buffer->indication_len,
+            uart->time_out);
+        break;
+    case UART_IT:
+        HAL_UART_Transmit_IT(&(uart->handles),
+                             (uint8_t *)(buffer->sources),
+                             buffer->indication_len);
+        break;
+    }
+}
+
+void send_srcview_uart(CCUART *uart, UARTSendBufferView *buffer_view)
+{
+    switch (uart->type)
+    {
+    case UART_SYNC:
+        HAL_UART_Transmit(
+            &(uart->handles),
+            (uint8_t *)(buffer_view->sources),
+            buffer_view->src_len,
+            uart->time_out);
+        break;
+    case UART_IT:
+        HAL_UART_Transmit_IT(&(uart->handles),
+                             (uint8_t *)(buffer_view->sources),
+                             buffer_view->src_len);
+        break;
+    }
+}
+
+void receive_src_uart(CCUART *uart, UARTSendBuffer *buffer)
+{
+    switch (uart->type)
+    {
+    case UART_SYNC:
+        HAL_UART_Receive(
+            &(uart->handles),
+            (uint8_t *)(buffer->sources),
+            buffer->indication_len,
+            uart->time_out);
+        break;
+    case UART_IT:
+        HAL_UART_Receive_IT(&(uart->handles),
+                            (uint8_t *)(buffer->sources),
+                            buffer->indication_len);
+        break;
+    }
+}
+
+void receive_srcview_uart(CCUART *uart, UARTSendBufferView *buffer_view)
+{
+    switch (uart->type)
+    {
+    case UART_SYNC:
+        HAL_UART_Receive(
+            &(uart->handles),
+            (uint8_t *)(buffer_view->sources),
+            buffer_view->src_len,
+            uart->time_out);
+        break;
+    case UART_IT:
+        HAL_UART_Receive_IT(&(uart->handles),
+                            (uint8_t *)(buffer_view->sources),
+                            buffer_view->src_len);
+        break;
+    }
+}
+
+#include <string.h>
+void send_message(CCUART* uart, const char* message)
+{
+    HAL_UART_Transmit(&uart->handles, (uint8_t*)message, strlen(message), uart->time_out);
 }
