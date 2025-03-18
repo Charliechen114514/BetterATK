@@ -1,18 +1,42 @@
-/*
-    Main Entry for the key detections
-*/
+#include "system_init.h"
 #include "gpio.h"
+#include "ccuart.h"
 #include "key.h"
-#include "system_clock.h"
+#include "stm32f4xx_hal.h"
+
+static void __enable_uartgpio(){
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+}
+
+static void __enable_uart(){
+    __HAL_RCC_USART1_CLK_ENABLE();
+}
+
+UART_AFGPIO_Info info = {
+    .alternatives = GPIO_AF7_USART1,
+    .tx = {
+        .pinType = GPIO_PIN_9,
+        .port = GPIOA
+    },
+    .rx = {
+        .pinType = GPIO_PIN_10,
+        .port = GPIOA
+    },
+    .uart_gpioclk_enabled = __enable_uartgpio,
+    .uart_self_enabled = __enable_uart,
+    .irq_n = USART1_IRQn,
+};
+
+CCUART  uart1;
+void setup_usart()
+{
+    configure_common_uart(&uart1, USART1, 115200, &info, UART_SYNC, HAL_MAX_DELAY);
+}
+
+
 static void __open_gpioclk(){
     __HAL_RCC_GPIOF_CLK_ENABLE();
 }
-
-static void __open_keyclk(){
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOE_CLK_ENABLE();
-}
-
 static void __post_init(CCGPIOType* type){set_ccgpio_state(type, CCGPIO_HIGH);}
 
 CCGPIOInitTypeDef led0_init = {
@@ -39,6 +63,21 @@ CCGPIOInitTypeDef led1_init = {
     .port = GPIOF
 };
 
+// LED Sources
+CCGPIOType led0, led1;
+
+void led_setup()
+{
+    configure_ccgpio(&led0, &led0_init);
+    configure_ccgpio(&led1, &led1_init);
+}
+
+
+static void __open_keyclk(){
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOE_CLK_ENABLE();
+}
+
 CCGPIOInitTypeDef key1_init = {
     .type = {
         .Pin = GPIO_PIN_0,
@@ -63,37 +102,16 @@ CCGPIOInitTypeDef key2_init = {
     .port = GPIOE
 };
 
-CCGPIOType led0, led1;
-static void do_reserve_led0(KeyPort* port)
-{
-    reverse_ccgpio_pinstate(&led0);
-    system_delay_ms(100);
-}
-
-static void do_reserve_led1(KeyPort* port)
-{
-    reverse_ccgpio_pinstate(&led1);
-    system_delay_ms(100);
-}
-
 static KeyPressStatus detect_method(KeyPort* port){
     return fetch_sync_gpiostate(&(port->gpio_core)) == CCGPIO_HIGH;
 }
 
-int main(void)
+KeyPort key1, key2;
+void do_reserve_led0(KeyPort* port);
+void do_reserve_led1(KeyPort* port);
+
+void key_init()
 {
-    HAL_Init();
-    system_clock_initAs168MHz(USE_HSE_AS_SYSCLK);
-    
-    configure_ccgpio(&led0, &led0_init);
-    configure_ccgpio(&led1, &led1_init);
-    set_ccgpio_state(&led1, CCGPIO_LOW);
-    KeyPort key1, key2;
     init_key(&key1, do_reserve_led0, detect_method, &key1_init);
     init_key(&key2, do_reserve_led1, detect_method, &key2_init);
-    while(1){
-        doKeyCallbackIfDone(&key1, KEY_LONG_PRESS);
-        doKeyCallbackIfDone(&key2, KEY_LONG_PRESS);
-    }
-    return 0;
 }
