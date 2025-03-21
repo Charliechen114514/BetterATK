@@ -42,6 +42,7 @@
         "ccgraphic_menuitem.h": "c",
         "ccgraphic_menuanimations.h": "c",
         "ccgraphic_textedit.h": "c",
-        "simple_text.h": "c"
+        "simple_text.h": "c",
+        "fast_setup.h": "c"
     }
 }
