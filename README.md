@@ -8,6 +8,8 @@
 
 ### 单片机
 
+![License](https://img.shields.io/badge/Module-MicroChips-red)
+
 #### STM32
 
 - STM32F103C8T6
@@ -22,7 +24,9 @@
 
 ### 讲解的框架
 
-- FreeRTOS
+![License](https://img.shields.io/badge/Module-MicroFrameWork-blue)
+
+- FreeRTOS（Current Based On STM32F4）
 
 ## 本项目的结构
 
@@ -36,8 +40,9 @@
 
 ## TODO
 
-- 进一步完善设计到的基础的单片机的基础知识
-- 预计在下个月将不同微处理器进行分支化处理
+- 进一步完善STM32F407ZGT6作为单片机样板的工程规划
+- 进一步推进完成STM32F4系列单片机基础模块的学习和常见驱动外设的编写，数据手册分析
+- 开展新的工作：Arch分支介绍Cortex M3和M4的架构说明
 
 
 
