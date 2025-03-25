@@ -6,7 +6,7 @@
 
 - 动态分配的任务创建：
 
-  ```
+  ```c
       BaseType_t xTaskCreate( TaskFunction_t pxTaskCode,
                               const char * const pcName,
                               const configSTACK_DEPTH_TYPE uxStackDepth,
@@ -17,7 +17,7 @@
 
 - 静态分配的任务创建：
 
-  ```
+  ```c
       TaskHandle_t xTaskCreateStatic( TaskFunction_t pxTaskCode,
                                       const char * const pcName,
                                       const configSTACK_DEPTH_TYPE uxStackDepth,
@@ -29,7 +29,7 @@
 
 - 任务删除的函数
 
-  ```
+  ```c
   void vTaskDelete( TaskHandle_t xTaskToDelete ) PRIVILEGED_FUNCTION;
   ```
 
@@ -37,7 +37,7 @@
 
 ## 我们的第一个FreeRTOS函数，从xTaskCreate说起
 
-```
+```c
     BaseType_t xTaskCreate( TaskFunction_t pxTaskCode,
                             const char * const pcName,
                             const configSTACK_DEPTH_TYPE uxStackDepth,
@@ -58,7 +58,7 @@
 
 ​	还有一些参数，那自然是FreeRTOS相关的配置了。第二个参数就是说明这个任务叫啥，关于为什么要有任务名称这个事情，笔者在后面的附录上有一定的回答，看官自行评判。需要注意的是，我们的任务名称不能太长，你必须保证你的任务名称长度不能超过`configMAX_TASK_NAME_LEN`，这个配置可以自己在FreeRTOSConfig.h中做修正，适当的进行裁剪
 
-```
+```c
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 ```
 
@@ -70,7 +70,7 @@
 
 ​	这个函数是需要我们注意的，你需要在你的FreeRTOSConfig中，定义好configSUPPORT_STATIC_ALLOCATION的宏定义，而且要定义为1.
 
-```
+```c
     TaskHandle_t xTaskCreateStatic( TaskFunction_t pxTaskCode,
                                     const char * const pcName,
                                     const configSTACK_DEPTH_TYPE uxStackDepth,
@@ -106,7 +106,7 @@
 
 ​	有创建就有释放，这个实在是没啥好说的。vTaskDelete就是充当的黑脸，当我们的任务结束的时候，我们就要使用vTaskDelete把任务从任务列表中移除，然后将他从占用的内存中释放掉。
 
-```
+```c
 void vTaskDelete( TaskHandle_t xTaskToDelete ) PRIVILEGED_FUNCTION;
 ```
 
@@ -182,7 +182,7 @@ void vTaskDelete( TaskHandle_t xTaskToDelete ) PRIVILEGED_FUNCTION;
 
 ​	值得注意的是新版FreeRTOS堆多核MCU的支持：
 
-```
+```c
 #if ( ( configNUMBER_OF_CORES > 1 ) && ( configUSE_CORE_AFFINITY == 1 ) )
 {
     pxNewTCB->uxCoreAffinityMask = configTASK_DEFAULT_CORE_AFFINITY;
@@ -528,7 +528,7 @@ if( pxCreatedTask != NULL )
 
 ​	这一步，我们则是伪造的我们的创建现场来干活。
 
-```
+```c
 /*
  * See header file for description.
  */
@@ -602,7 +602,7 @@ ARM Cortex-M 架构在发生异常（如 SVC、PendSV 等）时，硬件会自�
 
 ​	如果你大致理解了上面的内容，那么下面的静态创建，无非就是换成了我们用户提供的内容而已。
 
-```
+```c
     TaskHandle_t xTaskCreateStatic( TaskFunction_t pxTaskCode,
                                     const char * const pcName,
                                     const configSTACK_DEPTH_TYPE uxStackDepth,
