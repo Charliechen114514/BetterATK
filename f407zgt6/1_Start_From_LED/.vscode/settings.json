@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "precheck.h": "c",
+        "led.h": "c",
+        "sysclk_raw_pvt.h": "c",
+        "delay.h": "c",
+        "gpio.h": "c",
+        "sysclock.h": "c"
+    }
+}

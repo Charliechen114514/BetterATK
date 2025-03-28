@@ -1,0 +1,6 @@
+#ifndef CCGRAPHIC_COMPILE_OPTIONS_H
+#define CCGRAPHIC_COMPILE_OPTIONS_H
+
+
+
+#endif
