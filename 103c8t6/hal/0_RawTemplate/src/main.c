@@ -18,6 +18,4 @@ int main()
         HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_0);
         HAL_Delay(500);
     }
-
-
 }
