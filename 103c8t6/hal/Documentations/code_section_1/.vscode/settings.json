@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "system_clock.h": "c",
+        "stm32f1xx_hal.h": "c",
+        "system_clock_preference.h": "c"
+    }
+}
