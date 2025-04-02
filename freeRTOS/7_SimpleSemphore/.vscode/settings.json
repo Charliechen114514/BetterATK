@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "user_init.h": "c",
+        "semphr.h": "c"
+    }
+}
