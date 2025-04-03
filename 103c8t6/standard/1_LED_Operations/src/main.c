@@ -22,7 +22,6 @@ CCGPIO_InitType	initer = {
 	}
 };
 
-
 int main(void)
 {
 	CCGPIOType	type;
