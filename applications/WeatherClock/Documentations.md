@@ -167,3 +167,690 @@ AT+CIPSEND
 ​	**注意，不要带回车换行，否则会失败！**，退出我们的穿透模式
 
 ​	上面几个就是我们会用到的指令！
+
+# 理论成立，实践开始
+
+## 构建简单的ESP8266驱动
+
+### 设计协议帧和串口资源抽象函数
+
+​	理论成立，实战开始，我们的第一步，就是让我们的ESP8266变得可以方便使用起来，让代码之间存在良好的分层，不仅会让我们的开发变得方便，而且助于我们排查错误，不然谁也不喜欢代码之间各个层次混在一起，谁也不知道问题出在哪里。
+
+​	ESP8266当然还有很多其他的功能，但是他们的功能，我们的单片机要是想要使用，则必须利用串口进行交互，意味着如下的事情：
+
+- ESP8266必须占用单片机的一个UART资源
+
+```c
+// link with ESP8266's RX
+#define ESP8266_UART_TX_GPIO_PORT           GPIOD
+#define ESP8266_UART_TX_GPIO_PIN            GPIO_PIN_5
+#define ESP8266_UART_TX_GPIO_AF             GPIO_AF7_USART2
+#define ESP8266_UART_TX_GPIO_CLK_ENABLE()   do{ __HAL_RCC_GPIOD_CLK_ENABLE(); }while(0)     /* PB口时钟使能 */
+
+// link with ESP8266's TX
+#define ESP8266_UART_RX_GPIO_PORT           GPIOD
+#define ESP8266_UART_RX_GPIO_PIN            GPIO_PIN_6
+#define ESP8266_UART_RX_GPIO_AF             GPIO_AF7_USART2
+#define ESP8266_UART_RX_GPIO_CLK_ENABLE()   do{ __HAL_RCC_GPIOD_CLK_ENABLE(); }while(0)     /* PB口时钟使能 */
+
+/* UART Sources Settings */
+#define ESP8266_UART_NAME       (USART2)
+#define ESP8266_UART_IRQn       USART2_IRQn
+#define ESP8266_UART_IRQHandler USART2_IRQHandler
+#define ESP8266_UART_CLK_Enable() do{ __HAL_RCC_USART2_CLK_ENABLE(); }while(0)
+```
+
+​	笔者打算是使用UART2，对于STM32F407ZGT6而言，则是PD5和PD6引脚。
+
+​	为了方便，我们设计一下我们的UART抽象
+
+```c
+typedef struct __esp8266_uart_frame_protocol    ESP8288_UARTFrameProtocol;
+typedef struct __esp8266_uart_handle            ESP8266_UARTHandle;
+typedef struct {
+    uint8_t*(*get_internal_frame)(ESP8266_UARTHandle* handle);
+    uint16_t(*get_internal_frame_len)(ESP8266_UARTHandle* handle);
+    void(*reset)(ESP8266_UARTHandle* handle);
+}ESP8266_UARTHandleOperations;
+
+typedef struct __esp8266_uart_handle{
+    ESP8288_UARTFrameProtocol*      pvt_frame;
+    UART_HandleTypeDef              uart_handle;
+    ESP8266_UARTHandleOperations*   operations;
+}ESP8266_UARTHandle;
+
+void send_esp8266_uart_info(ESP8266_UARTHandle* handle, char* format, ...);
+void init_esp8266_uart_handle(
+    ESP8266_UARTHandle* handle, uint32_t    uart_baudrate);
+
+```
+
+​	我们依次进行说明
+
+- ESP8266_UARTHandleOperations衡量了我们的串口的约束动作——他只能对外提供如下的信息：
+  - 当前的缓存接收buffer本身和他的长度
+  - 重置我们的buffer
+- ESP8266_UARTHandle是我们占用的串口本身的抽象，他需要被开启中断（不然我们没办法想象一个同步的手法对我们的程序的影响占用会是多么的令人沮丧！），它内部包含了如下的信息
+  - ESP8288_UARTFrameProtocol约束了协议栈的格式
+  - UART_HandleTypeDef是我们更底层的HAL库Level的串口资源
+  - ESP8266_UARTHandleOperations上面是我们已经谈过的事情，不会再重复
+- send_esp8266_uart_info是一个变参数函数，这种函数的特性，笔者非常乐意说的是——您可以参考笔者的《操作系统手搓教程》的《实现一个自己的printf》，来看看我们是如何实现类似于printf的函数的
+- init_esp8266_uart_handle则是说明了我们通信的波特率，我们一般给出默认值115200，你可以自己查看手册，看看我们的ESP8266使用的通信频率到底是如何的。
+
+### 初始化我们的UART串口资源
+
+​	默认下，我们可以使用如下的方式进行串口资源初始化。
+
+```c
+void init_esp8266_uart_handle(
+    ESP8266_UARTHandle* handle, uint32_t    uart_baudrate)
+{
+    memset(handle, 0, sizeof(ESP8266_UARTHandle));
+    allocate_global_frame(handle);
+    current = handle;
+    handle->operations =    &operations;
+    handle->uart_handle.Instance            = ESP8266_UART_NAME;
+    handle->uart_handle.Init.BaudRate       = uart_baudrate;
+    handle->uart_handle.Init.WordLength     = UART_WORDLENGTH_8B;          
+    handle->uart_handle.Init.StopBits       = UART_STOPBITS_1;             
+    handle->uart_handle.Init.Parity         = UART_PARITY_NONE;             
+    handle->uart_handle.Init.Mode           = UART_MODE_TX_RX;             
+    handle->uart_handle.Init.HwFlowCtl      = UART_HWCONTROL_NONE;          
+    handle->uart_handle.Init.OverSampling   = UART_OVERSAMPLING_16;
+
+    HAL_UART_Init(&handle->uart_handle);
+}
+```
+
+​	我们这样处理协议栈的（为了说明里面代码的东西，必须先说说如何抽象的）
+
+```c
+/* Frame Settings */
+#define INTERNAL_ESP8266UART_RX_BUFFER  (1000)
+#define INTERNAL_ESP8266UART_TX_BUFFER  (128)
+
+typedef struct __esp8266_uart_frame_protocol {
+    uint8_t rx_buffer[INTERNAL_ESP8266UART_RX_BUFFER];
+    uint8_t tx_buffer[INTERNAL_ESP8266UART_TX_BUFFER];
+    struct 
+    {
+        uint32_t    frame_len;
+        uint8_t     is_finished;
+    }frame_status;
+}ESP8288_UARTFrameProtocol;
+
+static ESP8288_UARTFrameProtocol    global_frame;
+static ESP8266_UARTHandle*          current;	// 标定了现在我们处理的ESP8266是哪一个，如果你的场景是只有一个，那就没必要放置这个全局变量
+```
+
+​	其中，allocate_global_frame约定了我们的ESP8266的分配资源空间的行为是如何的，这里我们采取最简单的静态资源分配，直接把一个数组来作为我们的分配资源地址
+
+```c
+static void allocate_global_frame(ESP8266_UARTHandle* handle){
+    handle->pvt_frame   = &global_frame;
+}
+```
+
+​	如果您使用的是HAL库（笔者其实不太建议，因为我们需要自己处理一下中断，HAL的代码全写死了，处理没法灵活），可以按照上面的配置自己看看，基本上是默认的设置。
+
+​	以及我们还需要有一定的回调处理
+
+```c
+static void __open_tx_clk(){
+    ESP8266_UART_TX_GPIO_CLK_ENABLE();
+}
+
+static void __open_rx_clk(){
+    ESP8266_UART_RX_GPIO_CLK_ENABLE();
+}
+/* post init */
+void esp8266_uart_post_init(UART_HandleTypeDef *huart)
+{
+    CCGPIOInitTypeDef tx = {
+        .open_clock = __open_tx_clk,
+        .post_init = NULL,
+        .port = ESP8266_UART_TX_GPIO_PORT,
+        .type = {
+          .Pin = ESP8266_UART_TX_GPIO_PIN,
+          .Mode = GPIO_MODE_AF_PP,
+          .Alternate = ESP8266_UART_TX_GPIO_AF,
+          .Speed = GPIO_SPEED_FREQ_HIGH,
+          .Pull = GPIO_NOPULL
+        }
+      };
+
+      CCGPIOInitTypeDef rx = tx;
+      rx.port = ESP8266_UART_RX_GPIO_PORT;
+      rx.type.Pin = ESP8266_UART_RX_GPIO_PIN;
+      rx.open_clock = __open_rx_clk;
+      CCGPIOType  _rx, _tx;
+      configure_ccgpio(&_tx, &tx);
+      configure_ccgpio(&_rx, &rx);
+
+      ESP8266_UART_CLK_Enable();   
+      HAL_NVIC_SetPriority(ESP8266_UART_IRQn, 0, 0); 
+      HAL_NVIC_EnableIRQ(ESP8266_UART_IRQn);         
+
+      __HAL_UART_ENABLE_IT(huart, UART_IT_RXNE); 
+      __HAL_UART_ENABLE_IT(huart, UART_IT_IDLE); 
+}
+```
+
+​	他被放到了HAL_UART_MspInit里，注意，这里一般还会有调试串口（笔者开启的是UART1作为自己的调试串口）
+
+```c
+void HAL_UART_MspInit(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance != ESP8266_UART_NAME)
+    {
+        on_init_private_uart();
+    }
+    else
+    {
+        esp8266_uart_post_init(huart);
+    }
+}
+```
+
+​	我们还需要处理一下UART2的中断：
+
+```c
+/* Interrupt handler */
+void esp8266_uart_handle(void)
+{
+    uint8_t tmp;
+    
+    if (__HAL_UART_GET_FLAG(&current->uart_handle, UART_FLAG_ORE) != RESET)        /* UART overrun error interrupt */
+    {
+        __HAL_UART_CLEAR_OREFLAG(&current->uart_handle);                           /* Clear overrun error flag */
+    }
+    
+    if (__HAL_UART_GET_FLAG(&current->uart_handle, UART_FLAG_RXNE) != RESET)       /* UART receive interrupt */
+    {
+        HAL_UART_Receive(&current->uart_handle, &tmp, 1, HAL_MAX_DELAY);           /* UART receive data */
+        
+        if (current->pvt_frame->frame_status.frame_len >= (INTERNAL_ESP8266UART_RX_BUFFER - 1))
+        {
+            current->pvt_frame->frame_status.frame_len = 0;                        /* Reset frame length if buffer is full */
+        }
+        current->pvt_frame->rx_buffer[
+            current->pvt_frame->frame_status.frame_len] = tmp;                     /* Store received byte in buffer */
+        current->pvt_frame->frame_status.frame_len++;                              /* Increment frame length counter */
+    }
+
+    if (__HAL_UART_GET_FLAG(&current->uart_handle, UART_FLAG_IDLE) != RESET)       /* UART idle line detected */
+    {
+        current->pvt_frame->frame_status.is_finished = 1;                          /* Mark frame as complete */                      
+        __HAL_UART_CLEAR_IDLEFLAG(&current->uart_handle);                          /* Clear idle line flag */
+    }
+}
+```
+
+​	上面的代码就是在做这些事情：
+
+1. **检测并清除过载错误**：首先检查串口是否发生接收过载错误（ORE），如果发生则清除该错误标志，防止持续触发中断。
+2. **处理接收数据**：当串口接收到新数据（RXNE 标志置位）时，读取一个字节存入临时变量，并检查接收缓冲区是否已满。如果未满，则将数据存入接收缓冲区的当前位置，并递增帧长度计数器；如果已满，则重置帧长度计数器（实现循环缓冲）。
+3. **检测空闲中断**：当串口检测到空闲状态（IDLE 标志置位）时，标记当前帧接收完成（is_finished=1），并清除空闲标志。此机制通常用于判断一帧数据接收完毕（如串口通信中的帧间隔）。
+
+​	这个函数会在我们的UART2的中断触发的时候调用
+
+```c
+void ESP8266_UART_IRQHandler(void)
+{
+    esp8266_uart_handle();
+}
+```
+
+### 完成串口的功能函数
+
+​	下面我们完成一下串口操作本身的功能
+
+```c
+uint8_t* __pvt_get_frame_self(ESP8266_UARTHandle* handle){
+    // 传输完了，我们才会吐出来buffer，否则返回NULL表达我们没有接受
+    if(handle->pvt_frame->frame_status.is_finished){
+        handle->pvt_frame->rx_buffer[handle->pvt_frame->frame_status.frame_len] = '\0';
+        return handle->pvt_frame->rx_buffer;
+    }
+    return NULL;
+}
+
+uint16_t __pvt_get_frame_len(ESP8266_UARTHandle* handle)
+{
+    // 同上，为了协调一致
+    return handle->pvt_frame->frame_status.is_finished ? 
+        handle->pvt_frame->frame_status.frame_len : 0;
+}
+
+static void reset_the_handle(ESP8266_UARTHandle* handle)
+{
+    // 重置我们的串口接受状态
+    handle->pvt_frame->frame_status.frame_len = 0;
+    handle->pvt_frame->frame_status.is_finished = 0;
+}
+```
+
+​	这些操作给予给我们的结构体
+
+```
+static ESP8266_UARTHandleOperations operations = {
+    .get_internal_frame = __pvt_get_frame_self,
+    .get_internal_frame_len = __pvt_get_frame_len,
+    .reset = reset_the_handle
+};
+```
+
+​	现在操作的初始化就完成了回环，之后我们调用接口处理就好了，至于内部的实现细节，完全跟外界无关。
+
+​	最重要的函数，就属下面这个了
+
+```c
+void send_esp8266_uart_info(ESP8266_UARTHandle* handle, char* format, ...)
+{
+    va_list ap;
+
+    va_start(ap, format);
+    vsprintf((char *)handle->pvt_frame->tx_buffer, format, ap);
+    va_end(ap);
+
+    uint32_t len = strlen((const char*)handle->pvt_frame->tx_buffer);
+    HAL_UART_Transmit(&handle->uart_handle, handle->pvt_frame->tx_buffer, len, HAL_MAX_DELAY);
+}
+```
+
+​	我们阻塞的发送数据（当然你想做成异步的也行，注意如果一些操作需要结果的时候，你这个时候一定要设计显著的等待，如果使用的是RTOS，需要立刻进行信号量的休眠，直到资源接受线程唤醒！）
+
+### 设计ESP8266结构体本题的抽象
+
+```c
+#ifndef ESP8266_H
+#define ESP8266_H
+#include "esp8266_config.h"
+#include "esp8266_uart.h"
+#include "gpio.h"
+// 错误码的设计
+typedef enum {
+    ESP8266_OK      = 0,	// OK，啥问题没有
+    ESP8266_ERROR   = 1,	// 嗯，杂七杂八错误
+    ESP8266_TIMEOUT = 2,	// 超时错误
+    ESP8266_EINVAL  = 3		// 非法参数
+}ESP8266_ErrorCode;
+
+typedef enum {
+    ESP8266_APMode = 2,		// AP模式
+    ESP8266_StationMode = 1, // Sta模式
+    ESP8266_MixMode = 3		// 我全都要
+}ESP8266_WorkMode;
+
+typedef enum {
+    ESP8266_SoftReset,
+    ESP8266_HardReset
+}ESP8266_ResetMethod;
+
+typedef struct __esp8266_handle ESP8266_Handle;
+
+typedef struct {
+    char*           cmd;			// 命令command
+    char*           ack;			// 我们期待的回应ack
+    uint32_t        timeout_try;	// 尝试的最大限度
+}ESP8266_CMDPackage;
+
+typedef struct {
+    char*           ssid;
+    char*           pwd;
+}WiFi_Package;
+
+typedef struct {
+    char*           ip;
+    char*           port;
+}TCPServerInfo;
+
+typedef struct {
+/* Function pointer for sending AT commands (base method implementation) */
+uint8_t (*send_command)(ESP8266_Handle* handle, ESP8266_CMDPackage* pack);
+
+/* Resets the ESP8266 module using specified reset method */
+uint8_t (*reset)(ESP8266_Handle* handle, ESP8266_ResetMethod method);
+
+/* Tests if ESP8266 module is responsive/enabled */
+uint8_t (*test_enable)(ESP8266_Handle* handle);
+
+/* Sets the working mode of ESP8266 (Station/AP/Station+AP) */
+uint8_t (*set_mode)(ESP8266_Handle* handle, ESP8266_WorkMode mode);
+
+/* Enables or disables AT command echo */
+uint8_t (*set_as_echo)(ESP8266_Handle* handle, uint8_t status_wish);
+
+/* Joins a WiFi network using provided credentials */
+uint8_t (*join_wifi)(ESP8266_Handle* handle, WiFi_Package* package);
+
+/* Retrieves IP address obtained from WiFi connection */
+uint8_t (*fetch_ip_from_wifi)(ESP8266_Handle* handle, char* container, uint8_t buffer_len);
+
+/* Establishes TCP connection with specified server */
+uint8_t (*connect_tcp_server)(ESP8266_Handle* handle, TCPServerInfo* server_info);
+
+/* Enters transparent transmission mode */
+uint8_t (*enter_unvarnished)(ESP8266_Handle* handle);
+
+/* Exits transparent transmission mode */
+uint8_t (*leave_unvarnished)(ESP8266_Handle* handle);
+
+/* Fetches data from remote server using custom command */
+void (*fetch_from_remote)(ESP8266_Handle* handle, const char* cmd, char* buffer, uint16_t buflen);
+
+/* Refreshes/updates data fetched from remote */
+void (*refresh_fetch)(ESP8266_Handle* handle);
+}ESP8266_Operations;
+
+typedef struct __esp8266_handle{
+    ESP8266_UARTHandle      handle;
+    ESP8266_Operations*     operations;
+    CCGPIOInitTypeDef       rst_gpio;
+}ESP8266_Handle;
+
+uint8_t init_esp8266_handle(
+    ESP8266_Handle*         handle, 
+    uint32_t                baudrate,
+    CCGPIOInitTypeDef*      rst_package);
+
+#endif
+```
+
+​	ESP8266_Handle本身包含了我们的ESP8266_UARTHandle结构体抽象，以及操作抽象，还有一个是我们的RST引脚（注意，我们的系统必须接上单片机，辅助我们进行复位，不然下次开机的时候，我们的初始化会出现问题，或者你也可以不进行初始化，但是就会很麻烦）
+
+​	初始化现在因为串口的封装，代码变得没办法再简单了
+
+```c
+static void __init_rst_gpio(ESP8266_Handle *handle, CCGPIOInitTypeDef *gpio)
+{
+    CCGPIOType tmp;
+    configure_ccgpio(&tmp, gpio);
+}
+
+static void __hardware_reset(ESP8266_Handle *handle, CCGPIOInitTypeDef *gpio)
+{
+    CCGPIOType type;
+    type.pinType = gpio->type.Pin;
+    type.port = gpio->port;
+    set_ccgpio_state(&type, CCGPIO_LOW);
+    system_delay_ms(100);
+    set_ccgpio_state(&type, CCGPIO_HIGH);
+    system_delay_ms(500);
+}
+
+uint8_t init_esp8266_handle(
+    ESP8266_Handle *handle,
+    uint32_t baudrate,
+    CCGPIOInitTypeDef *rst_package)
+{
+    memset(handle, 0, sizeof(ESP8266_Handle));
+    __init_rst_gpio(handle, rst_package);
+    __hardware_reset(handle, rst_package);
+    init_esp8266_uart_handle(&handle->handle, baudrate);
+    handle->operations = &op;
+    handle->rst_gpio = *rst_package;
+    return handle->operations->test_enable(handle);
+}
+```
+
+​	初始化完成之后，我们就可以安安心心的开始完成上面的函数指针结构体抽象了
+
+#### 完成通用命令发：send_basic_command
+
+```c
+static uint8_t send_basic_command(ESP8266_Handle *handle, ESP8266_CMDPackage *pack)
+{
+    // 每一次发送，我们都要复位一下存储的结果
+    handle->handle.operations->reset(&handle->handle);
+    // 发出去
+    send_esp8266_uart_info(&handle->handle, "%s\r\n", pack->cmd);
+
+    if (!pack->ack || pack->timeout_try == 0)
+    {
+        return ESP8266_OK;
+    }
+
+    uint32_t timeout_try = pack->timeout_try;
+    uint8_t *receivings = NULL;
+    while (timeout_try > 0)
+    {
+        // 现在我们进行等待
+        receivings = handle->handle.operations->get_internal_frame(&handle->handle);
+        if (receivings)
+        {
+            // 如果我们出现了期待的回应，那么，说明我们的操作成了
+            if (strstr((const char *)receivings, pack->ack) != NULL)
+            {
+                return ESP8266_OK;
+            }
+            else
+            {
+                // 反之，说明不是我们想要的输出，先清空，后面我们可能还有新的输入
+                handle->handle.operations->reset(&handle->handle);
+            }
+        }
+        timeout_try--;
+        system_delay_ms(1);
+    }
+
+    return ESP8266_TIMEOUT;
+}
+```
+
+#### 完成通用穿透收发：fetch_from_remote
+
+```c
+static void fetch_from_remote(
+    ESP8266_Handle *handle, const char *cmd, char *buffer, uint16_t buflen)
+{
+    handle->handle.operations->reset(&handle->handle);
+    send_esp8266_uart_info(&handle->handle, "%s\r\n", cmd);
+    
+    uint32_t timeout_try = 10000;
+    uint8_t *receivings = NULL;
+    while (timeout_try > 0)
+    {
+        receivings = handle->handle.operations->get_internal_frame(&handle->handle);
+        if (receivings)
+        {
+            uint16_t rx_buffer_len = handle->handle.operations->get_internal_frame_len(&handle->handle);
+            uint16_t fin_len = ((rx_buffer_len > buflen) ? buflen : rx_buffer_len);
+            strncpy(buffer, (const char*)receivings, fin_len);
+            return;
+        }
+        timeout_try--;
+        system_delay_ms(1);
+    }
+}
+```
+
+​	这个函数实际上就是在上面收到的基础上，做的事情是直接拷贝所得的结果
+
+#### 复位模式选择
+
+```c
+static uint8_t reset_hard(ESP8266_Handle *handle)
+{
+    ESP8266_CMDPackage package = {
+        .ack = "ready",
+        .cmd = "AT+RESTORE",
+        .timeout_try = 3000};
+    return send_basic_command(handle, &package);
+}
+
+static uint8_t reset_soft(ESP8266_Handle *handle)
+{
+    ESP8266_ErrorCode code;
+    ESP8266_CMDPackage pack = {
+        .ack = "OK",
+        .cmd = "AT+RST",
+        .timeout_try = 500};
+    code = send_basic_command(handle, &pack);
+    if (code == ESP8266_OK)
+    {
+        system_delay_ms(1000);
+    }
+    return code;
+}
+
+static uint8_t reset_method(ESP8266_Handle *handle, ESP8266_ResetMethod method)
+{
+    ESP8266_ErrorCode code = ESP8266_ERROR;
+    switch (method)
+    {
+    case ESP8266_HardReset:
+        code = reset_hard(handle);break;
+    case ESP8266_SoftReset:
+        code = reset_soft(handle);break;
+    }
+    return code;
+}
+```
+
+#### 运行时测试是否正常（注意，需要在穿透模式前使用）
+
+```c
+static uint8_t test_enable(ESP8266_Handle *handle)
+{
+    ESP8266_CMDPackage package = {
+        .ack = "OK",
+        .cmd = "AT",
+        .timeout_try = 500};
+    ESP8266_ErrorCode code;
+    for (uint8_t i = 0; i < 10; i++)
+    {
+        code = send_basic_command(handle, &package);
+        if (code == ESP8266_OK)
+        {
+            return code;
+        }
+    }
+    return code;
+}
+```
+
+#### 设置回显模式
+
+```c
+static uint8_t set_echo_status(ESP8266_Handle *handle, uint8_t status)
+{
+    char *cmd = (status) ? "ATE0" : "ATE1";
+    ESP8266_CMDPackage pack = {
+        .ack = "OK",
+        .cmd = cmd,
+        .timeout_try = 500};
+    return send_basic_command(handle, &pack);
+}
+```
+
+#### 加入WIFI和WIFI下的IP获取
+
+```
+static uint8_t join_wifi(ESP8266_Handle *handle, WiFi_Package *pack)
+{
+    char final_cmd[128];
+    snprintf(final_cmd, 128, "AT+CWJAP=\"%s\",\"%s\"", pack->ssid, pack->pwd);
+    ESP8266_CMDPackage __pack = {
+        .ack = "WIFI GOT IP",
+        .cmd = final_cmd,
+        .timeout_try = 10000};
+    ESP8266_ErrorCode code = send_basic_command(handle, &__pack);
+    // must a delay, else we won't get next operations
+    system_delay_ms(100);
+    return code;
+}
+
+static uint8_t fetch_ip(ESP8266_Handle *handle, char *container, uint8_t buffer_len)
+{
+    ESP8266_ErrorCode ret;
+    char *p_start = NULL;
+    char *p_end = NULL;
+
+    ESP8266_CMDPackage pack = {
+        .ack = "OK",
+        .cmd = "AT+CIFSR",
+        .timeout_try = 500};
+
+    ret = send_basic_command(handle, &pack);
+    if (ret != ESP8266_OK)
+    {
+        return ESP8266_ERROR;
+    }
+    system_delay_ms(100);
+    p_start = strstr((const char *)handle->handle.operations->get_internal_frame(&handle->handle), "\"");
+    p_end = strstr(p_start + 1, "\"");
+    *p_end = '\0';
+    snprintf(container, buffer_len, "%s", p_start + 1);
+    return ESP8266_OK;
+}
+```
+
+#### 穿透模式设置
+
+```
+static uint8_t enter_unvarnished(ESP8266_Handle *handle)
+{
+    ESP8266_CMDPackage pack = {
+        .ack = "OK",
+        .cmd = "AT+CIPMODE=1",
+        .timeout_try = 500};
+    ESP8266_ErrorCode code = send_basic_command(handle, &pack);
+    if (code != ESP8266_OK)
+    {
+        return code;
+    }
+    pack.cmd = "AT+CIPSEND";
+    pack.ack = ">";
+    return send_basic_command(handle, &pack);
+}
+
+static uint8_t leave_unvarnished(ESP8266_Handle *handle)
+{
+    send_esp8266_uart_info(&handle->handle, "+++");
+    system_delay_ms(100);
+    return ESP8266_OK;
+}
+```
+
+#### 设置工作模式
+
+```
+static uint8_t set_mode(ESP8266_Handle* handle, ESP8266_WorkMode mode)
+{
+    int _mode = (int)mode;
+    char buffer[128];
+    snprintf(buffer, 128, "AT+CWMODE=%d", _mode);
+    ESP8266_CMDPackage pack = {
+        .ack = "OK",
+        .cmd = buffer,
+        .timeout_try = 500};    
+    return send_basic_command(handle, &pack);
+}
+```
+
+#### 连接 TCP服务器
+
+```
+static uint8_t connect_tcp(ESP8266_Handle *handle, TCPServerInfo *info)
+{
+    char cmd[128];
+    snprintf(cmd, 128, "AT+CIPSTART=\"TCP\",\"%s\",%s", info->ip, info->port);
+    ESP8266_CMDPackage pack = {
+        .ack = "CONNECT",
+        .cmd = cmd,
+        .timeout_try = 500};
+    return send_basic_command(handle, &pack);
+}
+
+```
+
+#### 复位接收
+
+```
+static void refresh_fetch(ESP8266_Handle* handle)
+{
+    handle->handle.operations->reset(&handle->handle);
+}
+```
+

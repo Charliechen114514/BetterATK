@@ -131,8 +131,6 @@ void esp8266_uart_handle(void)
     if (__HAL_UART_GET_FLAG(&current->uart_handle, UART_FLAG_ORE) != RESET)        /* UART接收过载错误中断 */
     {
         __HAL_UART_CLEAR_OREFLAG(&current->uart_handle);                           /* 清除接收过载错误中断标志 */
-        (void)current->uart_handle.Instance->SR;                                   /* 先读SR寄存器，再读DR寄存器 */
-        (void)current->uart_handle.Instance->DR;
     }
     
     if (__HAL_UART_GET_FLAG(&current->uart_handle, UART_FLAG_RXNE) != RESET)       /* UART接收中断 */
