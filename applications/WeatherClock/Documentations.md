@@ -854,3 +854,378 @@ static void refresh_fetch(ESP8266_Handle* handle)
 }
 ```
 
+​	到这里，我们的抽象工作做的就差不多了。
+
+## 构建基本的程序运行流——使用我们构建的驱动完成天气和时间的获取
+
+​	现在我们终于可以完成业务逻辑了，那就是使用我们的驱动获取数据。
+
+### 基本的硬件初始化
+
+```c
+    HAL_Init();
+    system_clock_initAs168MHz(USE_HSI_AS_SYSCLK);
+    key_init();
+    setup_usart();
+    init_rtc();
+    send_message(&uart1, "UART is setting up!\n");
+    CCDeviceHandler* handler;
+    handler = setup_display_device();
+    on_start_loggy(handler);
+    on_log_infos(handler, "initing_esp8266...");
+    ESP8266_Handle* esp8266 = init_weather_fetcher();
+    on_log_infos(handler, "init esp8266 success!");
+    system_delay_ms(300);
+    on_clear_loggy(handler);
+```
+
+​	上面的部分是笔者做的硬件的初始化的部分。其中，setup_display_device使能了我们的SSD1309设备，on_start_loggy开始了我们的输出日志前摇（代码太多了，这里就不放代码了）
+
+​	我们看看的是weather_fether函数，他承担了我们连接WIFI获取IP的功能
+
+```c
+ESP8266_Handle *init_weather_fetcher()
+{
+    CCDeviceHandler *display_handler = get_private_handler();
+    // 初始化我们的ESP8266，完成最基本的工作
+    if (init_esp8266_handle(&esp8266_handle, 115200, &rst) != ESP8266_OK)
+    {
+        on_log_infos(display_handler,
+                     "Can not init the chips! See UART Helper for further informations!");
+        send_logger_to_uart(
+            "Can not init the chips! "
+            "You possible forget link RST\r\n");
+        while (1)
+            ;
+    }
+	
+    // 这个部分需要你自己填写你自己的SSID和密码
+    WiFi_Package packageOfMyWifi = {
+        .pwd = WIFI_PASSWD,
+        .ssid = WIFI_SSID};
+
+    esp8266_handle.operations->reset(&esp8266_handle, ESP8266_HardReset);
+    esp8266_handle.operations->set_mode(&esp8266_handle, ESP8266_StationMode);
+    esp8266_handle.operations->reset(&esp8266_handle, ESP8266_SoftReset);
+    esp8266_handle.operations->set_as_echo(&esp8266_handle, 0);
+    on_log_infos(display_handler,
+                 "About to Join WIFI...");
+    send_logger_to_uart("About to Join WIFI...\r\n");
+    ESP8266_ErrorCode code = esp8266_handle.operations->join_wifi(&esp8266_handle, &packageOfMyWifi);
+    if (code != ESP8266_OK)
+    {
+        on_log_infos(display_handler,
+                     "Failed To Join WIFI...");
+        send_logger_to_uart(
+            "Failed To Join WIFI!\r\n"
+            "make sure the WIFI works in 2.4GHz and "
+            "provide correct SSID and Password!\r\n");
+        while (1)
+            ;
+    }
+
+    char buffer[20];
+    esp8266_handle.operations->fetch_ip_from_wifi(&esp8266_handle, buffer, 20);
+    char display_buffer[40];
+    snprintf(display_buffer, 40, "Fetch IP From Wifi: %s!", buffer);
+    on_log_infos(display_handler, display_buffer);
+    send_logger_to_uart(display_buffer);
+    return &esp8266_handle;
+}
+```
+
+​	上面的代码就是完成了ESP8266的基本的初始化，连接我们的WIFI，这样我们就完成了跟外部互联网交互的动作
+
+### 发起对应网站的通讯
+
+```c
+    if(!weather_info_session(esp8266, weather_sessions, 1000)){
+        on_log_infos(handler, "Failed To Fetch weather... See UART for further infomations\r\n");
+        while(1);
+    }
+    on_log_infos(handler, "Fetch the weather info success! see UART for Details");
+    
+    if(!time_info_session(esp8266, time_session, 500)){
+        on_log_infos(handler, "Failed To Fetch time... See UART for further infomations");
+        while(1);
+    }
+
+    on_log_infos(handler, "Fetch the time info success! see UART for Details");
+```
+
+ 	我们定义向一个网站发起通信的流程，为一个session会话，完成一次绘画，我们拿到我们想要的结果，比如说就是我们亲爱的json数据格式。
+
+​	笔者使用的天气预报的API是心智天气的，时钟的则是k780的时钟服务。各位看官需要自行申请，按照格式自己写好请求的URL（注意，笔者建议先自己使用串口转TTL调试）
+
+```c
+#define WEATHER_REQUEST_TCP_URL               ("api.seniverse.com")
+#define WEATHER_REQUEST_TCP_CMD_URL           ("https://api.seniverse.com/v3/weather/daily.json?key=KEY&location=changchun&language=en&unit=c&start=0&days=1")
+
+#define TIME_REQUEST_TCP_URL                  ("api.k780.com")
+#define TIME_REQUEST_TCP_CMD_URL              ("https://api.k780.com/?app=life.time&appkey=APPKEY&sign=SIGN&format=json")
+
+/* We has one ESP8266 to fetch the weather info */
+uint8_t weather_info_session(ESP8266_Handle *who,
+                          char *container, int container_len)
+{
+    return make_strict_app_request(
+        who, WEATHER_REQUEST_TCP_URL,
+        WEATHER_REQUEST_TCP_CMD_URL, 
+        container, container_len
+    );
+}
+
+uint8_t time_info_session(ESP8266_Handle *who,
+                       char *container, int container_len)
+{
+    return make_strict_app_request(
+        who, TIME_REQUEST_TCP_URL,
+        TIME_REQUEST_TCP_CMD_URL, 
+        container, container_len
+    );  
+}
+```
+
+​	可以看到，我们把需求全部转发到了make_strcit_app_request函数上
+
+```c
+static uint8_t make_strict_app_request(
+    ESP8266_Handle *handle,
+    const char *on_tcp_connection, /* make tcp request */
+    const char *get_url,
+    char *container, int container_len)
+{
+    char tcp_connection_request[TCP_CONNECTION_REQUEST_BUFFER_N];
+    // 这里可以使用的是connect_tcp_server方法，我当时忘记了（（（
+    snprintf(tcp_connection_request, TCP_CONNECTION_REQUEST_BUFFER_N,
+        "AT+CIPSTART=\"TCP\",\"%s\",80", on_tcp_connection);
+    ESP8266_CMDPackage package = {
+        .ack = "OK",
+        .cmd = tcp_connection_request,
+        .timeout_try = TIMEOUT_TRY_MAX
+    };
+    uint8_t res = handle->operations->send_command(handle, &package);
+    if(res != ESP8266_OK){
+        send_runninglogger_to_uart("Error Occurs! "
+            "Can not enter send tcp request on command: %s\r\n", on_tcp_connection);
+        return 0;
+    }
+    send_runninglogger_to_uart("Success in sending TCP Request: %s", on_tcp_connection);
+
+    // 进入穿透模式
+    res = handle->operations->enter_unvarnished(handle);
+    if(res != ESP8266_OK){
+        send_runninglogger_to_uart("Can not enter unvarnished! Repowered the System!\n");
+        return 0;
+    }
+
+    send_runninglogger_to_uart("Successfully enter unvarnished!\r\n");
+
+    // 发请求
+    snprintf(tcp_connection_request, TCP_CONNECTION_REQUEST_BUFFER_N,
+        "GET %s", get_url);
+
+    send_runninglogger_to_uart("About send request with command: %s\r\n", tcp_connection_request);
+    handle->operations->fetch_from_remote(
+        handle, tcp_connection_request , container, container_len);
+    
+    send_runninglogger_to_uart(
+        "Done! Requests are followings: \r\n%s\r\n", container);
+
+    // 关闭穿透模式
+    handle->operations->leave_unvarnished(handle);
+    // 关闭这一次连接
+    package.cmd = "AT+CIPCLOSE";
+    
+    res = handle->operations->send_command(handle, &package);
+    if(res != ESP8266_OK){
+        send_runninglogger_to_uart("Failed To Quit the unvarnished!");
+        return 0;
+    }
+    send_runninglogger_to_uart("session success!\r\n");
+    return 1;
+}
+```
+
+> 首先通过AT命令建立与指定TCP服务器的连接，使用给定的主机地址和默认的80端口，如果连接成功则进入穿透模式以便直接发送原始数据，随后构造一个HTTP GET请求并发送到指定的URL路径，从远程服务器获取响应数据并存储在提供的容器中，获取完成后退出穿透模式并关闭当前TCP连接，在整个过程中每一步都会通过日志记录操作状态，包括连接建立、穿透模式切换、请求发送和连接关闭等关键步骤的成功或失败情况，最终返回操作是否成功的标志
+
+​	上面的两个session完成之后，就是我们的json解析了。json解析可以使用cJson项目完成这些事情。
+
+[DaveGamble/cJSON: Ultralightweight JSON parser in ANSI C](https://github.com/DaveGamble/cJSON)
+
+```
+    weather_pack_from_json_string(weather_sessions, &weather_info_package);
+    time_pack_from_json_string(time_session, &time_info_package);
+```
+
+​	其中, weather_sessions和time_session是我们获取的字符串json,我们将这些数据解析出来：
+
+```c
+// WeatherInfoPackage 结构体的数组大小约束宏
+#define DAY_WEATHER_SIZE        15
+#define NIGHT_WEATHER_SIZE      15
+#define HIGH_TEMP_SIZE          6
+#define LOW_TEMP_SIZE           6
+#define RAINFALL_CONTAINER_SIZE 8
+#define RAIN_PRECIP_SIZE        6
+#define WIND_DIRECTION_SIZE     5
+#define WIND_DEGREE_SIZE        5
+#define WIND_SPEED_SIZE         5
+#define WIND_SCALE_SIZE         5
+#define HUMIDITY_SIZE           5
+
+// TimeInfoPackage 结构体的数组大小约束宏
+#define TIMESTAMP_SIZE          30
+
+typedef struct {
+    char            dayWeather[DAY_WEATHER_SIZE];
+    char            nightWeather[NIGHT_WEATHER_SIZE];
+    char            highTemp[HIGH_TEMP_SIZE];
+    char            lowTemp[LOW_TEMP_SIZE];
+    struct {
+        char            rainfallContainer[RAINFALL_CONTAINER_SIZE];
+        char            rainPrecip[RAIN_PRECIP_SIZE];
+    }rainy_info;
+    struct {
+        char            direction[WIND_DIRECTION_SIZE];
+        char            degree[WIND_DEGREE_SIZE];
+        char            speed[WIND_SPEED_SIZE];
+        char            scale[WIND_SCALE_SIZE];
+    }windy_info;      
+    char            humidity[HUMIDITY_SIZE];   
+} WeatherInfoPackage;
+
+typedef struct {
+    char    timestamp[TIMESTAMP_SIZE];
+} TimeInfoPackage;
+
+int weather_pack_from_json_string(const char* json_string, WeatherInfoPackage* pack);
+int time_pack_from_json_string(const char* json_string, TimeInfoPackage* pack);
+
+
+int weather_pack_from_json_string(const char *json_string, WeatherInfoPackage *pack)
+{
+    // parse if is Json
+    cJSON *root = cJSON_Parse(json_string);
+    if (root == NULL)
+    {
+        const char *error_ptr = cJSON_GetErrorPtr();
+        send_runninglogger_to_uart(error_ptr);
+        return 0;
+    }
+
+    // fetch resules
+    cJSON *results = cJSON_GetObjectItemCaseSensitive(root, "results");
+    if (results == NULL || !cJSON_IsArray(results))
+    {
+        send_runninglogger_to_uart("Results not found or not an array\n");
+        cJSON_Delete(root);
+        return 0;
+    }
+
+    // iterate the result
+    cJSON *result = cJSON_GetArrayItem(results, 0);
+    if (result == NULL)
+    {
+        send_runninglogger_to_uart("No result found in array\n");
+        cJSON_Delete(root);
+        return 0;
+    }
+
+    // parse daily
+    cJSON *daily = cJSON_GetObjectItemCaseSensitive(result, "daily");
+    if (daily != NULL && cJSON_IsArray(daily))
+    {
+        int daily_count = cJSON_GetArraySize(daily);
+        for (int i = 0; i < daily_count; i++)
+        {
+            cJSON *day = cJSON_GetArrayItem(daily, i);
+
+            cJSON *text_day = cJSON_GetObjectItemCaseSensitive(day, "text_day");
+            cJSON *text_night = cJSON_GetObjectItemCaseSensitive(day, "text_night");
+
+            cJSON *high = cJSON_GetObjectItemCaseSensitive(day, "high");
+            cJSON *low = cJSON_GetObjectItemCaseSensitive(day, "low");
+            cJSON *rainfall = cJSON_GetObjectItemCaseSensitive(day, "rainfall");
+            cJSON *precip = cJSON_GetObjectItemCaseSensitive(day, "precip");
+            cJSON *wind_direction =
+                cJSON_GetObjectItemCaseSensitive(day, "wind_direction");
+            cJSON *wind_direction_degree =
+                cJSON_GetObjectItemCaseSensitive(day, "wind_direction_degree");
+            cJSON *wind_speed = cJSON_GetObjectItemCaseSensitive(day, "wind_speed");
+            cJSON *wind_scale = cJSON_GetObjectItemCaseSensitive(day, "wind_scale");
+            cJSON *humidity = cJSON_GetObjectItemCaseSensitive(day, "humidity");
+
+            strncpy(pack->dayWeather, text_day->valuestring, DAY_WEATHER_SIZE);
+            strncpy(pack->nightWeather, text_night->valuestring, NIGHT_WEATHER_SIZE);
+            strncpy(pack->highTemp, high->valuestring, HIGH_TEMP_SIZE);
+            strncpy(pack->lowTemp, low->valuestring, LOW_TEMP_SIZE);
+            strncpy(pack->rainy_info.rainfallContainer, rainfall->valuestring, RAINFALL_CONTAINER_SIZE);
+            strncpy(pack->rainy_info.rainPrecip, precip->valuestring, RAIN_PRECIP_SIZE);
+            strncpy(pack->windy_info.direction, wind_direction->valuestring, WIND_DIRECTION_SIZE);
+            strncpy(pack->windy_info.speed, wind_speed->valuestring, WIND_SPEED_SIZE);
+            strncpy(pack->windy_info.degree, wind_direction_degree->valuestring, WIND_DEGREE_SIZE);
+            strncpy(pack->windy_info.scale, wind_scale->valuestring, WIND_SCALE_SIZE);
+            strncpy(pack->humidity, humidity->valuestring, HUMIDITY_SIZE);
+        }
+    }
+
+    cJSON_Delete(root);
+    return 1;
+}
+
+int time_pack_from_json_string(const char *json_string, TimeInfoPackage *pack)
+{
+    cJSON *root = cJSON_Parse(json_string);
+    if (root == NULL)
+    {
+        const char *error_ptr = cJSON_GetErrorPtr();
+        if (error_ptr != NULL)
+        {
+            send_runninglogger_to_uart("Error before: %s\n", error_ptr);
+        }
+        return 0;
+    }
+
+    cJSON *success = cJSON_GetObjectItemCaseSensitive(root, "success");
+    if (success == NULL || !cJSON_IsString(success))
+    {
+        send_runninglogger_to_uart("Success field not found or not a string\n");
+        cJSON_Delete(root);
+        return 0;
+    }
+
+    send_runninglogger_to_uart("success status: %s\n", success->valuestring);
+    if (strcmp(success->valuestring, "1") != 0)
+    {
+        send_runninglogger_to_uart("Failed To Fetch the time issue!");
+    }
+
+    cJSON *result = cJSON_GetObjectItemCaseSensitive(root, "result");
+    if (result == NULL || !cJSON_IsObject(result))
+    {
+        send_runninglogger_to_uart("Can not fetch result!\r\n");
+        cJSON_Delete(root);
+        return 0;
+    }
+
+    cJSON *datetime_1 = cJSON_GetObjectItemCaseSensitive(result, "datetime_1");
+
+    send_runninglogger_to_uart("fetch time: %s\n", datetime_1->valuestring);
+    strncpy(pack->timestamp, datetime_1->valuestring, TIMESTAMP_SIZE);
+    cJSON_Delete(root);
+    return 1;
+}
+```
+
+​	现在，你就可以拿着这个数据去做任何你想做的事情了。
+
+## 绘制基本的UI
+
+​	绘制UI也是使用的笔者自己构建的CCGraphic库，由于这个编程了OLED绘制的活，如果朋友们需要自己来看看如何绘制OLED图像的事情，请参考笔者的文章：
+
+[从0开始使用面对对象C语言搭建一个基于OLED的图形显示框架_显示交互c语言框架-CSDN博客](https://blog.csdn.net/charlie114514191/article/details/145397231)
+
+​	当然，因为你已经拿到了数据，你也可以使用自己的OLED图形绘制库自行绘制。演示视频笔者放到了video文件夹了。
+
+​	所有的代码都在[BetterATK/applications/WeatherClock at STM32F4 · Charliechen114514/BetterATK](https://github.com/Charliechen114514/BetterATK/tree/STM32F4/applications/WeatherClock)下，可以自行参考。
