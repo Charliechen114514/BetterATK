@@ -746,7 +746,7 @@ static uint8_t set_echo_status(ESP8266_Handle *handle, uint8_t status)
 
 #### 加入WIFI和WIFI下的IP获取
 
-```
+```c
 static uint8_t join_wifi(ESP8266_Handle *handle, WiFi_Package *pack)
 {
     char final_cmd[128];
@@ -788,7 +788,7 @@ static uint8_t fetch_ip(ESP8266_Handle *handle, char *container, uint8_t buffer_
 
 #### 穿透模式设置
 
-```
+```c
 static uint8_t enter_unvarnished(ESP8266_Handle *handle)
 {
     ESP8266_CMDPackage pack = {
@@ -815,7 +815,7 @@ static uint8_t leave_unvarnished(ESP8266_Handle *handle)
 
 #### 设置工作模式
 
-```
+```c
 static uint8_t set_mode(ESP8266_Handle* handle, ESP8266_WorkMode mode)
 {
     int _mode = (int)mode;
@@ -831,7 +831,7 @@ static uint8_t set_mode(ESP8266_Handle* handle, ESP8266_WorkMode mode)
 
 #### 连接 TCP服务器
 
-```
+```c
 static uint8_t connect_tcp(ESP8266_Handle *handle, TCPServerInfo *info)
 {
     char cmd[128];
@@ -847,7 +847,7 @@ static uint8_t connect_tcp(ESP8266_Handle *handle, TCPServerInfo *info)
 
 #### 复位接收
 
-```
+```c
 static void refresh_fetch(ESP8266_Handle* handle)
 {
     handle->handle.operations->reset(&handle->handle);
