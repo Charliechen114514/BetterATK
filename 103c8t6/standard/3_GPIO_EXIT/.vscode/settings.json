@@ -1,0 +1,21 @@
+{
+    "files.associations": {
+        "stm32f1xx.h": "c",
+        "stm32f103xb.h": "c",
+        "delay.h": "c",
+        "stm32f10x.h": "c",
+        "stm32f10x_conf.h": "c",
+        "key.h": "c",
+        "gpio.h": "c",
+        "system_clock.h": "c",
+        "gpio_exti.h": "c",
+        "precheck.h": "c",
+        "simple_text.h": "c",
+        "soft_iic.h": "c",
+        "oled_config.h": "c",
+        "ssd1306.h": "c",
+        "fast_setup.h": "c",
+        "ccgraphic_textedit.h": "c",
+        "ccgraphic_device_adapter.h": "c"
+    }
+}

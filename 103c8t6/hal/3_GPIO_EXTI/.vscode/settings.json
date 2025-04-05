@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "gpio.h": "c",
+        "system_clock.h": "c",
+        "gpio_exti.h": "c",
+        "fast_setup.h": "c",
+        "ccgraphic_common.h": "c",
+        "simple_text.h": "c"
+    }
+}
