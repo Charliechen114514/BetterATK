@@ -5,4 +5,4 @@
 - demo board info存放着笔者使用的STM32F103C8T6核心板的相关信息
 - hal表明我们采用的是HAL库的源代码
 - standard则是标准库
-- Documentation存放着笔者的讲解
+- common_documnetations存放着一部分公共的讲解
